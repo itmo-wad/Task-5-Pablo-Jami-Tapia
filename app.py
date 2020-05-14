@@ -1,51 +1,108 @@
-from flask import Flask, render_template, redirect, url_for, request, flash
+from flask import Flask, render_template, redirect, url_for, request, flash, session
 from flask import send_from_directory
-from flask_bootstrap import Bootstrap
-from flask_wtf import FlaskForm 
-from wtforms import StringField, PasswordField, BooleanField
+from werkzeug.utils import secure_filename
+from flask_login import LoginManager
+from flask_login import login_required, logout_user, current_user, login_user
+from wtforms import StringField, PasswordField, BooleanField, SubmitField
 from wtforms.validators import InputRequired, Email, Length
 from werkzeug.security import generate_password_hash, check_password_hash
-from werkzeug.utils import secure_filename
-from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
-from flask_pymongo import PyMongo
-import os
+from flask_bootstrap import Bootstrap
+from flask_wtf import FlaskForm 
+from werkzeug.urls import url_parse
+import re, os
+import pymongo
 
 app = Flask(__name__)
 UPLOAD_FOLDER = "uploads"
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif'}
 basedir = os.path.abspath(os.path.dirname(__file__))
-app.config['SECRET_KEY'] = 'Thisissupposedtobesecret!'
-app.config["MONGO_URI"] = "mongodb://localhost:27017/wad"
-db = PyMongo(app)
+
+client = pymongo.MongoClient("mongodb+srv://wad:Pablin1492@cluster0-s8hsf.mongodb.net/test")
+db = client["wad"]
+users = db["users"]
+users.create_index("username")
+app.secret_key = "super secret key"
+
+login_manager = LoginManager(app)
+login_manager.login_view = 'login'
+
 app.config['UPLOAD_FOLDER']= UPLOAD_FOLDER
 bootstrap = Bootstrap(app)
 
-login_manager = LoginManager()
-login_manager.init_app(app)
-login_manager.login_view = 'login'
+ 
+@app.route('/favicon.ico')
+def favicon():
+    return send_from_directory(os.path.join(app.root_path, 'static'), 'favicon.ico', mimetype='favicon.ico')
 
-class User(UserMixin,db.db.get_collection(users)):
-    username = db.db.users.find_one()
-    email = db.db.users.find_one()
-    password = db.db.users.find_one()
+def add_user_to_db(username,email,password):
+      users.insert({
+            "username": username,
+            "password": password,
+            "email": email
+        })
+    
+def check_user_in_db(username):
+    # user = users.find({"username":username})
+    user = users.find_one({"username":username})
+    print (user)
+    if user :        
+       
+        return True
+
+def check_pass_in_db(username,password):
+        user=users.find_one({"username":username})
+        if user["password"] == password:
+            return username
+
+class User:
+    def __init__(self, username):
+        self.username = username
+
+    @staticmethod
+    def is_authenticated():
+        return True
+
+    @staticmethod
+    def is_active():
+        return True
+
+    @staticmethod
+    def is_anonymous():
+        return False
+
+    def get_id(self):
+        return self.username
+
+    @staticmethod
+    def check_password(password_hash, password):
+        return check_password_hash(password_hash, password)
+
 
 @login_manager.user_loader
-def load_user(user_id):
-    return User.query.get(int(user_id))
+def load_user(username):
+        u = users.find_one({"username":username})
+        print (u)
+        if not u:
+            return None
+        return User(username=u['username'])
 
-class LoginForm(FlaskForm):
+
+
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS   
+
+class Login(FlaskForm):
     username = StringField('username', validators=[InputRequired(), Length(min=4, max=15)])
     password = PasswordField('password', validators=[InputRequired(), Length(min=8, max=80)])
     remember = BooleanField('remember me')
+    login = SubmitField('Login')
+   
 
 class RegisterForm(FlaskForm):
     email = StringField('email', validators=[InputRequired(), Email(message='Invalid email'), Length(max=50)])
     username = StringField('username', validators=[InputRequired(), Length(min=4, max=15)])
     password = PasswordField('password', validators=[InputRequired(), Length(min=8, max=80)])
-
-def allowed_file(filename):
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 @app.route('/')
 def index():
@@ -53,13 +110,16 @@ def index():
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    form = LoginForm()
+    form = Login()
 
     if form.validate_on_submit():
-        user = User.query.filter_by(username=form.username.data).first()
-        if user:
-            if check_password_hash(user.password, form.password.data):
-                login_user(user, remember=form.remember.data)
+        user = users.find_one({"username": form.username.data})
+        print("textoIn")
+        print(user)
+        print("textoOut")
+        if user and User.check_password(user['password'], form.password.data):
+                user_obj = User(username=user['username'])
+                login_user(user_obj, remember=form.remember.data)
                 return redirect(url_for('dashboard'))
 
         return '<h1>Invalid username or password</h1>'
@@ -72,21 +132,28 @@ def signup():
     form = RegisterForm()
 
     if form.validate_on_submit():
+        user = users.find_one({"username": form.username.data})
+        if user:
+            return '<h1>Existing user, please create a different user!</h1>'
+        
         hashed_password = generate_password_hash(form.password.data, method='sha256')
-        new_user = User(username=form.username.data, email=form.email.data, password=hashed_password)
-        db.session.add(new_user)
-        db.session.commit()
+        add_user_to_db(username=form.username.data, email=form.email.data, password=hashed_password)
+                 
+                     
 
         return '<h1>New user has been created!</h1>'
         #return '<h1>' + form.username.data + ' ' + form.email.data + ' ' + form.password.data + '</h1>'
 
     return render_template('signup.html', form=form)
 
-@app.route('/cabinet')
+                        
+@app.route('/cabinet', methods=['Get','POST'])
 @login_required
 def dashboard():
-    return render_template('cabinet.html', name=current_user.username)
-
+    
+        return render_template('cabinet.html', name=current_user.username)
+ 
+  
 
 @app.route('/upload', methods=['GET', 'POST'])
 @login_required
@@ -118,14 +185,11 @@ def uploaded_file(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'],filename)
 
 @app.route('/logout')
-@login_required
+
 def logout():
-    logout_user()
+    session.pop('username', None)
     return redirect(url_for('index'))
-
-@app.route('/favicon.ico')
-def favicon():
-    return send_from_directory("static", "favicon.ico", mimetype="/images/favicon.ico")
-
+  
 if __name__ == '__main__':
-    app.run(debug=True)
+    
+    app.run( port='5000',threaded=True)
